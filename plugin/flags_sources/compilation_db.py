@@ -11,10 +11,37 @@ from ..utils.flag import Flag
 
 from os import path
 from fnmatch import fnmatch
+from functools import partial
+from multiprocessing import Pool
 
 import logging
 
 log = logging.getLogger("ECC")
+
+
+def parse_entry(entry, folder):
+    print(entry)
+    argument_list = []
+
+    from copy import copy
+    if 'directory' in entry:
+        base_path = entry['directory']
+    if 'command' in entry:
+        import shlex
+        argument_list = shlex.split(entry['command'])
+    elif 'arguments' in entry:
+        argument_list = entry['arguments']
+    else:
+        # TODO(igor): maybe show message to the user instead here
+        log.critical(" compilation database has unsupported format")
+        return None
+
+    base_path = copy(folder)
+    file_path = File.canonical_path(entry['file'], base_path)
+
+    argument_list = CompilationDb.filter_bad_arguments(argument_list)
+    print(argument_list)
+    return (file_path, Flag.tokenize_list(argument_list, base_path))
 
 
 class CompilationDb(FlagsSource):
@@ -126,31 +153,19 @@ class CompilationDb(FlagsSource):
 
         parsed_db = {}
         unique_list_of_flags = UniqueList()
-        for entry in data:
-            file_path = File.canonical_path(entry['file'],
-                                            database_file.folder)
-            argument_list = []
 
-            base_path = database_file.folder
-            if 'directory' in entry:
-                base_path = entry['directory']
-
-            if 'command' in entry:
-                import shlex
-                argument_list = shlex.split(entry['command'])
-            elif 'arguments' in entry:
-                argument_list = entry['arguments']
-            else:
-                # TODO(igor): maybe show message to the user instead here
-                log.critical(" compilation database has unsupported format")
-                return None
-
-            argument_list = CompilationDb.filter_bad_arguments(argument_list)
-            flags = Flag.tokenize_list(argument_list, base_path)
+        thread_pool = Pool(4)
+        list_of_flag_tuples = thread_pool.imap(
+            partial(parse_entry, folder=database_file.folder), data, 10)
+        thread_pool.close()
+        thread_pool.join()
+        for file_path, flags in list_of_flag_tuples:
+            print(file_path, flags)
             # set these flags for current file
             parsed_db[file_path] = flags
             # also maintain merged flags
             unique_list_of_flags += flags
+
         # set an entry for merged flags
         parsed_db['all'] = unique_list_of_flags.as_list()
         # return parsed_db
